@@ -12,10 +12,9 @@ from sklearn.metrics import mean_squared_error
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuración general
-ESTACIONES = ["401", "403"]  # Códigos de estaciones activas
+ESTACIONES = ["401", "403"]
 VARIABLES = ["PM10", "PM25"]
 HORAS_TEST = 48
-PERIODO_ESTACIONAL = 24
 CARPETA_MODELOS = "modelos_guardados"
 API_BASE_URL = "https://marco.cornare.gov.co/api/v1/estaciones"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
@@ -23,7 +22,6 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 os.makedirs(CARPETA_MODELOS, exist_ok=True)
 
 def obtener_todas_las_paginas(datos_json, verificar_ssl=False, timeout=30):
-    """Sigue el campo 'next' de una respuesta paginada y acumula todos los registros."""
     todos_los_registros = list(datos_json.get("values", []))
     siguiente_url = datos_json.get("next")
     while siguiente_url:
@@ -71,7 +69,6 @@ def limpiar_datos(df):
     df_reg = df_idx.reindex(rango)
     df_reg["valor"] = df_reg["valor"].interpolate(method="time").ffill().bfill()
     
-    # Filtrado de Outliers (IQR + límite físico >= 0)
     Q1, Q3 = df_reg["valor"].quantile(0.25), df_reg["valor"].quantile(0.75)
     IQR = Q3 - Q1
     mask = (df_reg["valor"] < (Q1 - 1.5 * IQR)) | (df_reg["valor"] > (Q3 + 1.5 * IQR)) | (df_reg["valor"] < 0)
@@ -90,7 +87,7 @@ def procesar_estacion(estacion, variable):
     test_len = min(HORAS_TEST, len(serie) // 5)
     train, test = serie.iloc[:-test_len], serie.iloc[-test_len:]
 
-    # Búsqueda rápida del mejor modelo ARIMA (order p, d, q)
+    # Búsqueda rápida de mejor ARIMA
     best_rmse, best_order = float("inf"), (1, 0, 1)
     for p in range(0, 3):
         for d in range(0, 2):
@@ -104,7 +101,7 @@ def procesar_estacion(estacion, variable):
                 except Exception:
                     continue
 
-    # Entrenar modelo ARIMA final sobre TODA la serie
+    # Paquete ARIMA
     modelo_arima = ARIMA(serie, order=best_order).fit()
     paquete_arima = {
         "tipo": "arima",
@@ -122,12 +119,12 @@ def procesar_estacion(estacion, variable):
     ruta_arima = f"{CARPETA_MODELOS}/modelo_{estacion}_{variable}_ARIMA.pkl"
     joblib.dump(paquete_arima, ruta_arima)
 
-    # Entrenar modelo SES final sobre TODA la serie
-    modelo_ses = SimpleExpSmoothing(serie, initialization_method="estimated").fit()
-    rmse_ses = np.sqrt(mean_squared_error(test, SimpleExpSmoothing(train, initialization_method="estimated").fit().forecast(test_len)))
+    # Paquete SES libre de objetos complejos scipy
+    m_ses_eval = SimpleExpSmoothing(train, initialization_method="estimated").fit()
+    rmse_ses = np.sqrt(mean_squared_error(test, m_ses_eval.forecast(test_len)))
+    
     paquete_ses = {
         "tipo": "ses",
-        "modelo": modelo_ses,
         "metadata": {
             "nombre_modelo": "SES",
             "variable": variable,
@@ -147,12 +144,11 @@ if __name__ == "__main__":
         for var in VARIABLES:
             procesar_estacion(est, var)
 
-    # Descarga automática del .zip con los modelos si estás ejecutando en Google Colab
     try:
         import shutil
         from google.colab import files
         shutil.make_archive("modelos_guardados", 'zip', CARPETA_MODELOS)
         files.download("modelos_guardados.zip")
-        print("\n📦 Descargando 'modelos_guardados.zip'. Descomprímelo y sube la carpeta 'modelos_guardados' a tu repositorio en GitHub.")
+        print("\n📦 Descargando 'modelos_guardados.zip'.")
     except ImportError:
-        print("\nEntorno local detectado. Archivos guardados en 'modelos_guardados/'.")
+        print("\nArchivos guardados localmente.")
